@@ -21,10 +21,13 @@ def main():
     reset.add_argument('--data',default='.nova')
     args = parser.parse_args()
     if args.mode=='agent':
-        from .agent import run_agent
+        from .agent import AgentSetupError, run_agent
         from .locking import instance_lock
-        with instance_lock(args.data,'agent'):
-            run_agent(args.url,args.data,args.name,args.address,args.allow_http,args.java)
+        try:
+            with instance_lock(args.data,'agent'):
+                run_agent(args.url,args.data,args.name,args.address,args.allow_http,args.java)
+        except (AgentSetupError,ValueError,RuntimeError) as exc:
+            raise SystemExit('NOVA Agent: '+str(exc)) from None
     elif args.mode=='password':
         import getpass
         import secrets

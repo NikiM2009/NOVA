@@ -22,6 +22,76 @@ import yaml
 from . import catalog
 
 
+class AgentSetupError(Exception):
+    """An actionable setup failure that the CLI can show without a traceback."""
+
+
+def connection_hint(url):
+    host = httpx.URL(url).host
+    if host in {'127.0.0.1','localhost','::1'}:
+        return ('127.0.0.1/localhost bezeichnet diesen Rechner. Läuft die Zentrale hier, '
+                'starte sie in einem separaten Terminal ohne --demo. Läuft sie auf einem '
+                'anderen Rechner, verwende mit --url dessen erreichbare Adresse.')
+    return ('Prüfe, ob die Zentrale läuft und unter dieser Adresse erreichbar ist. '
+            'Eine Bindung der Zentrale nur an 127.0.0.1 erlaubt keine Verbindung von anderen Rechnern. '
+            'Prüfe außerdem Port, Firewall und gegebenenfalls den HTTPS-Reverse-Proxy.')
+
+
+def request_central(client, method, path, url, **kwargs):
+    try:
+        return client.request(method,path,**kwargs)
+    except httpx.HTTPError as exc:
+        if 'CERTIFICATE_VERIFY_FAILED' in str(exc):
+            reason = 'TLS-Zertifikat der Zentrale konnte nicht verifiziert werden.'
+        elif isinstance(exc,httpx.TimeoutException):
+            reason = f'Zeitüberschreitung beim Verbinden mit der Zentrale unter {url}.'
+        elif isinstance(exc,httpx.ProxyError):
+            reason = f'Die Proxy-Verbindung zur Zentrale unter {url} ist fehlgeschlagen.'
+        else:
+            reason = f'Zentrale unter {url} nicht erreichbar.'
+        raise AgentSetupError(reason+' '+connection_hint(url)) from None
+
+
+def check_central(client, url):
+    """Check reachability and real mode before requesting a single-use code."""
+    response = request_central(client,'GET','/health',url)
+    if not response.is_success:
+        raise AgentSetupError(f'Zentrale antwortet beim Verbindungstest mit HTTP {response.status_code}. '
+                              'Adresse und Reverse-Proxy prüfen; der Kopplungscode wurde noch nicht abgefragt.')
+    try:
+        info = response.json()
+    except ValueError:
+        info = None
+    if not isinstance(info,dict) or info.get('status')!='ok' or not isinstance(info.get('demo'),bool):
+        raise AgentSetupError('Unter dieser Adresse antwortet keine passende NOVA-Zentrale. '
+                              'Bitte die Adresse der Zentrale inklusive Port prüfen.')
+    if info['demo']:
+        raise AgentSetupError('Diese Zentrale läuft im Demomodus. Starte sie ohne --demo, '
+                              'bevor du echte Agenten koppelst.')
+
+
+def register_agent(client, url, token, name, address):
+    response = request_central(client,'POST','/api/agent/register',url,json=dict(
+        token=token,name=name,address=address,platform=f'{platform.system()} · {platform.machine()}'))
+    if response.status_code==401:
+        raise AgentSetupError('Kopplungscode abgelaufen, ungültig oder bereits verwendet. '
+                              'Unter „Agenten → Agent verbinden“ einen neuen Code erzeugen.')
+    if response.status_code==403:
+        raise AgentSetupError('Die Zentrale erlaubt keine Agentenkopplung. Prüfe, ob sie ohne --demo läuft.')
+    if response.status_code==422:
+        raise AgentSetupError('Agentenname oder Adresse ist ungültig. Prüfe --name und --address.')
+    if not response.is_success:
+        raise AgentSetupError(f'Kopplung fehlgeschlagen (HTTP {response.status_code}). '
+                              'Zentrale und gegebenenfalls Reverse-Proxy prüfen.')
+    try:
+        config = response.json()
+    except ValueError:
+        config = None
+    if not isinstance(config,dict) or not all(isinstance(config.get(k),str) and config[k] for k in ('id','token')):
+        raise AgentSetupError('Die Zentrale hat keine gültigen Agentenzugangsdaten zurückgegeben.')
+    return dict(id=config['id'],token=config['token'],url=url.rstrip('/'))
+
+
 def atomic_json(path, data):
     path = Path(path)
     tmp = path.with_suffix('.tmp')
@@ -427,24 +497,31 @@ class Engine:
 
 
 def run_agent(url, root, name=None, address=None, allow_http=False, java='java'):
-    parsed = httpx.URL(url)
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL:
+        raise AgentSetupError('Ungültige Zentralenadresse. Verwende --url https://deine-zentrale.example.') from None
+    if not parsed.host or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {'','/'}:
+        raise AgentSetupError('Die Zentralenadresse muss eine HTTP(S)-Adresse ohne Zugangsdaten, Pfad oder Abfrageparameter sein.')
     if parsed.scheme!='https' and not (parsed.scheme=='http' and (parsed.host in {'localhost','127.0.0.1','::1'} or allow_http)):
         raise ValueError('HTTPS erforderlich. Für ein vertrauenswürdiges lokales Netz explizit --allow-http verwenden.')
     root = Path(root).resolve()
     root.mkdir(parents=True,exist_ok=True,mode=0o700)
     config_file = root/'connection.json'
     with httpx.Client(base_url=url.rstrip('/'),timeout=20) as client:
+        config = None
         if config_file.exists():
             config = json.loads(config_file.read_text())
             if config['url'] != url.rstrip('/'):
                 raise ValueError('Agent bereits mit einer anderen Zentrale gekoppelt. Separates Datenverzeichnis verwenden.')
-        else:
+        check_central(client,url)
+        if config is None:
             import getpass
+            print('Zentrale erreichbar. Halte sie während der Kopplung in Betrieb.',flush=True)
             token = getpass.getpass('Einmaligen Kopplungscode aus NOVA einfügen: ').strip()
-            response = client.post('/api/agent/register',json=dict(token=token,name=name or socket.gethostname(),
-                                  address=address or socket.gethostname(),platform=f'{platform.system()} · {platform.machine()}'))
-            response.raise_for_status()
-            config = {**response.json(),'url':url.rstrip('/')}
+            if not token:
+                raise AgentSetupError('Kein Kopplungscode eingegeben. Erzeuge den Code in der laufenden Zentrale.')
+            config = register_agent(client,url,token,name or socket.gethostname(),address or socket.gethostname())
             atomic_json(config_file,config)
         client.headers['Authorization'] = 'Bearer '+config['token']
         engine = Engine(root,java)

@@ -1,5 +1,12 @@
 # Änderungen
 
+## Korrektur des Agentenstarts
+
+- Erreichbarkeit und Betriebsmodus der Zentrale werden vor der Kopplungscode-Abfrage geprüft.
+- Verbindungs-, TLS-, Proxy- und Kopplungsfehler erhalten verständliche Meldungen; der Agentenstart und sein Installer erzeugen bei diesen Fehlern keinen doppelten Traceback mehr.
+- Anleitung für Zentrale und Agent auf demselben Rechner sowie auf getrennten Geräten ergänzt.
+- Regressionstests für den Verbindungsaufbau und Python 3.13 in der Linux-/Windows-CI ergänzt.
+
 ## 0.1.0
 
 - Python-Zentrale mit Anmeldung, SQLite-Persistenz und einmaliger Agentenkopplung.

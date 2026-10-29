@@ -76,6 +76,28 @@ Für einen ausdrücklich vertrauenswürdigen HTTP-LAN-Test kann der Agent mit `-
 
 Der Agent benötigt **keinen eingehenden Verwaltungsport**: Er holt Aufträge ausgehend von der Zentrale ab. Die Minecraft-Spielports müssen dagegen entsprechend der Netzwerktopologie freigegeben werden. Agenten als **dedizierte Benutzer ohne Administrator-/Root-Rechte** ausführen, da heruntergeladene Server und Plugins mit den Rechten des Agenten laufen.
 
+### „Connection refused“ beim Agentenstart
+
+Die Installation kann erfolgreich sein, obwohl der anschließende Verbindungsaufbau fehlschlägt. `127.0.0.1` und `localhost` bezeichnen immer **das Gerät, auf dem der Agent läuft**. Ein Agent auf dem Pi erreicht darüber keine Zentrale auf deinem Windows-PC oder einem anderen Server. Die Zentrale und der Agent sind zwei getrennte, gleichzeitig laufende Prozesse.
+
+Wenn beide auf demselben Linux-Rechner laufen, im ersten Terminal die Zentrale starten und laufen lassen:
+
+```sh
+cd ~/NOVA
+.venv/bin/python -m nova serve
+```
+
+An der Zentrale anmelden und einen Kopplungscode erzeugen. Dann im **zweiten Terminal** auf demselben Rechner:
+
+```sh
+cd ~/NOVA
+.venv/bin/python -m nova agent --url http://127.0.0.1:8000
+```
+
+Läuft die Zentrale auf einem anderen Gerät, dessen tatsächlich erreichbare HTTPS-Adresse verwenden. Nur für einen Test im vertrauenswürdigen LAN kann die Zentrale ausdrücklich an `0.0.0.0` gebunden werden (`nova serve --host 0.0.0.0`); den Agenten dann mit `--url http://IP-DER-ZENTRALE:8000 --allow-http` starten. `IP-DER-ZENTRALE` ist durch die echte IP zu ersetzen. Auf dem Zentralenrechner muss die Firewall Verbindungen auf diesen Port erlauben. `0.0.0.0` selbst ist keine Agenten-Zieladresse. Eine bestehende Zentrale muss nicht ein zweites Mal gestartet werden, sondern mit den passenden Bindungsparametern laufen.
+
+NOVA prüft beim Agentenstart jetzt zuerst `/health`, meldet eine unerreichbare oder im Demomodus gestartete Zentrale verständlich und fragt erst danach nach dem Kopplungscode. Ein verweigerter Verbindungsaufbau wird nicht durch erneutes Installieren oder einen anderen Code behoben. Bereits installierte Agenten direkt mit dem oben angegebenen `.venv`-Python starten.
+
 ## Ein Minecraft-Netzwerk aufbauen
 
 1. Agent(en) verbinden und ihre vom Proxy erreichbaren Adressen prüfen.
@@ -147,9 +169,9 @@ python install.py --no-start
 
 Die Tests prüfen echte HTTP-API-Abläufe inklusive Anmeldung/Kopplung, Agentenberechtigungen, Aufträgen, Dateischutz und Java-Prozesssteuerung mit einem kontrollierten Testprozess. Sie benötigen keinen Minecraft-Download. Ein tatsächlicher Paper-/Velocity-Start samt Minecraft-Client ist eine zusätzliche Integration, die Java und den oben beschriebenen Netzwerkzugriff benötigt.
 
-Wenn ein Java-21-JDK mit `javac` installiert ist, wird zusätzlich eine kleine Java-Konsolenanwendung gebaut und durch den echten Agenten installiert, gestartet, angesprochen, neu gestartet und sauber beendet. Ohne JDK wird genau dieser Test ausdrücklich übersprungen. Die GitHub-Actions-Konfiguration führt die Tests mit Java 21 auf Linux und Windows unter Python 3.11 und 3.12 aus; sie veröffentlicht und deployt nichts.
+Wenn ein Java-21-JDK mit `javac` installiert ist, wird zusätzlich eine kleine Java-Konsolenanwendung gebaut und durch den echten Agenten installiert, gestartet, angesprochen, neu gestartet und sauber beendet. Ohne JDK wird genau dieser Test ausdrücklich übersprungen. Die GitHub-Actions-Konfiguration führt die Tests mit Java 21 auf Linux und Windows unter Python 3.11, 3.12 und 3.13 aus; sie veröffentlicht und deployt nichts.
 
-Bei der lokalen Prüfung dieser Version bestanden **20 Tests**, einschließlich des echten JVM-Tests, sowie der Desktop-/Mobiltest in Chromium. Echte PaperMC-Downloads und Minecraft-Serverstarts konnten wegen der Netzwerkfreigabe der Cloud-Umgebung nicht ausgeführt werden. Die Windows-Matrix wird erst durch GitHub Actions überprüft; sie wurde hier nicht lokal ausgeführt.
+Die lokalen Backend-/Agententests einschließlich des echten JVM-Tests sind bestanden; zusätzlich wurde der Desktop-/Mobilablauf in Chromium geprüft. Regressionstests stellen einen tatsächlich verweigerten Verbindungsaufbau nach und prüfen, dass dabei weder ein Kopplungscode abgefragt noch ein Traceback ausgegeben wird. Echte PaperMC-Downloads und Minecraft-Serverstarts konnten wegen der Netzwerkfreigabe der Cloud-Umgebung nicht ausgeführt werden. Die Windows-Matrix wird erst durch GitHub Actions überprüft; sie wurde hier nicht lokal ausgeführt.
 
 Optionaler Browser-Smoke-Test: Playwright und Chromium separat installieren, Demo starten und `python tests/browser_smoke.py` ausführen. `NOVA_TEST_URL` und `NOVA_TEST_BROWSER` wählen bei Bedarf Zieladresse und Chromium-Datei. Der Test verändert ausschließlich Demodaten.
 

@@ -36,8 +36,9 @@ def main():
         command += ['serve']+(['--demo'] if args.demo else [])
     print('\nInstallation abgeschlossen. Künftiger Start:\n'+subprocess.list2cmdline(command),flush=True)
     if not args.no_start:
-        subprocess.run(command,check=True)
+        return subprocess.run(command,check=False).returncode
+    return 0
 
 
 if __name__=='__main__':
-    main()
+    raise SystemExit(main())
