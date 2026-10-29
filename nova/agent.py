@@ -270,7 +270,10 @@ class Engine:
         return proc is not None and proc.poll() is None
 
     def install(self, id_, spec):
-        if id_ in self.servers:
+        recover = spec.get('recover_existing',False)
+        if self.running(id_):
+            raise ValueError('Instanz zuerst stoppen; eine laufende Instanz wird nicht verändert.')
+        if id_ in self.servers and not recover:
             raise ValueError('Instanz ist bereits installiert; Dateien werden nicht überschrieben.')
         if spec['software'] not in {'paper','velocity'}:
             raise ValueError('Nicht unterstützte Software')
@@ -285,18 +288,50 @@ class Engine:
             raise ValueError('Java 21 oder neuer ist erforderlich. Neueste Minecraft-Versionen können Java 25 benötigen.')
         root = self.folder(id_)
         root.mkdir(parents=True, exist_ok=True)
+        fs = FileManager(root)
+        jar = fs.path('server.jar')
+        configs = ['eula.txt','server.properties'] if spec['software']=='paper' else ['velocity.toml']
+        for relative in configs:
+            path = fs.path(relative)
+            if path.exists() and not path.is_file():
+                raise ValueError(f'{relative} ist keine reguläre Datei. Vorhandene Daten bleiben unverändert.')
+        if jar.exists():
+            if not recover:
+                raise ValueError('server.jar ist bereits vorhanden. Zur Wiederherstellung ausdrücklich „Installation wiederholen“ verwenden.')
+            if not jar.is_file() or not zipfile.is_zipfile(jar):
+                raise ValueError('Vorhandene server.jar ist keine lesbare JAR-Datei. Sie wurde nicht überschrieben; bitte sichern und prüfen.')
+            for process in psutil.process_iter(['cmdline']):
+                try:
+                    if f'-Dnova.instance={id_}' in (process.info.get('cmdline') or []):
+                        raise ValueError('Ein Prozess dieser Instanz läuft noch. Vor der Wiederherstellung kontrolliert stoppen.')
+                except psutil.Error:
+                    continue
         self.states[id_] = 'installing'
         try:
-            build = catalog.download(spec['software'],spec['version'],root/'server.jar')
+            existing = jar.exists()
+            build = self.servers.get(id_,{}).get('build') if existing else catalog.download(spec['software'],spec['version'],jar)
             if spec['software']=='paper':
-                (root/'eula.txt').write_text('eula=true\n', encoding='utf-8')
-                (root/'server.properties').write_text(f'server-port={spec["port"]}\nmotd=NOVA | {spec["name"]}\nmax-players=200\nonline-mode=true\nenable-status=true\n',encoding='utf-8')
+                defaults = {'eula.txt':'eula=true\n',
+                            'server.properties':f'server-port={spec["port"]}\nmotd=NOVA | {spec["name"]}\nmax-players=200\nonline-mode=true\nenable-status=true\n'}
             else:
-                (root/'velocity.toml').write_text(f'config-version = "2.7"\nbind = "0.0.0.0:{spec["port"]}"\nmotd = "NOVA Network"\nshow-max-players = 200\nonline-mode = true\nplayer-info-forwarding-mode = "none"\n[servers]\ntry = []\n',encoding='utf-8')
+                defaults = {'velocity.toml':f'config-version = "2.7"\nbind = "0.0.0.0:{spec["port"]}"\nmotd = "NOVA Network"\nshow-max-players = 200\nonline-mode = true\nplayer-info-forwarding-mode = "none"\n[servers]\ntry = []\n'}
+            for relative, content in defaults.items():
+                if not fs.path(relative).exists():
+                    fs.perform('write',dict(path=relative,content=content,overwrite=False))
             with self.lock:
-                self.servers[id_] = {**spec,'build':build}
-                self.save()
-            return {'build':build,'message':'Installiert. Instanz kann jetzt gestartet werden.'}
+                previous = self.servers.get(id_)
+                self.servers[id_] = {k:v for k,v in dict(spec,build=build).items() if k!='recover_existing'}
+                try:
+                    self.save()
+                except Exception:
+                    if previous is None:
+                        self.servers.pop(id_,None)
+                    else:
+                        self.servers[id_] = previous
+                    raise
+            message = ('Vorhandene JAR und Konfiguration beibehalten; lokale Zuordnung wiederhergestellt.' if existing else
+                       'Installiert. Instanz kann jetzt gestartet werden.')
+            return {'build':build,'message':message}
         finally:
             self.states.pop(id_,None)
 
@@ -439,7 +474,9 @@ class Engine:
         if kind=='forget' and id_ not in self.servers:
             return {'message':'Instanz nicht installiert; vorhandene Dateien bleiben erhalten.'}
         if id_ not in self.servers:
-            raise ValueError('Instanz auf diesem Agenten nicht gefunden')
+            raise ValueError(f'Instanz auf diesem Agenten nicht installiert oder lokale Zuordnung fehlt. '
+                             f'Aktives Datenverzeichnis: {self.root}. Prüfe den ursprünglichen Installationsfehler '
+                             'in NOVA und verwende danach „Installation wiederholen“.')
         if kind=='start':
             return self.start(id_)
         if kind=='stop':
@@ -560,13 +597,14 @@ def run_agent(url, root, name=None, address=None, allow_http=False, java='java')
             stopped.set()
         signal.signal(signal.SIGTERM,shutdown)
         signal.signal(signal.SIGINT,shutdown)
-        print('NOVA Agent verbunden. Beenden mit Strg+C. Java-Prozesse werden dabei gestoppt.',flush=True)
+        print(f'NOVA Agent verbunden. Datenverzeichnis: {root}',flush=True)
+        print('Beenden mit Strg+C. Java-Prozesse werden dabei gestoppt.',flush=True)
         try:
             while not stopped.is_set():
                 memory = psutil.virtual_memory()
                 metrics = dict(cpu=psutil.cpu_percent(),ram_total=round(memory.total/1024**3,1),
                                ram_used=round(memory.used/1024**3,1),disk=psutil.disk_usage(os.fspath(root)).percent,
-                               uptime=int(time.time()-psutil.boot_time()))
+                               uptime=int(time.time()-psutil.boot_time()),data_dir=os.fspath(root))
                 try:
                     response = client.post('/api/agent/heartbeat',json=dict(metrics=metrics,servers=engine.snapshot()))
                     response.raise_for_status()

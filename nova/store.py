@@ -39,8 +39,16 @@ class Store:
                 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT,
                     time REAL, level TEXT, title TEXT, detail TEXT);
                 CREATE TABLE IF NOT EXISTS samples (time REAL, players INTEGER, cpu REAL, ram REAL);
+                CREATE TABLE IF NOT EXISTS installations (server_id TEXT PRIMARY KEY,
+                    job_id TEXT, status TEXT, error TEXT DEFAULT '');
             """)
             db.execute("INSERT OR IGNORE INTO settings VALUES ('network_secret', ?)", (secrets.token_hex(32),))
+            # Recover the latest installation outcome from pre-upgrade databases.
+            rows = db.execute("SELECT j.* FROM jobs j JOIN servers s ON s.id=j.server_id WHERE j.kind='install' ORDER BY j.created DESC,j.rowid DESC").fetchall()
+            for row in rows:
+                result = json.loads(row['result']) if row['result'] else {}
+                db.execute('INSERT OR IGNORE INTO installations VALUES (?,?,?,?)',
+                           (row['server_id'],row['id'],row['status'],result.get('error','')))
 
     @contextlib.contextmanager
     def db(self):
@@ -77,8 +85,12 @@ class Store:
 
     def job(self, agent_id, server_id, kind, payload):
         job_id = secrets.token_hex(12)
-        self.execute("INSERT INTO jobs VALUES (?,?,?,?,?,? ,NULL,?,NULL)",
-                     (job_id, agent_id, server_id, kind, json.dumps(payload), 'queued', time.time()))
+        with self.db() as db:
+            db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,? ,NULL,?,NULL)",
+                       (job_id, agent_id, server_id, kind, json.dumps(payload), 'queued', time.time()))
+            if kind=='install':
+                db.execute('INSERT OR REPLACE INTO installations VALUES (?,?,?,?)',
+                           (server_id,job_id,'queued',''))
         return job_id
 
     def seed_demo(self):

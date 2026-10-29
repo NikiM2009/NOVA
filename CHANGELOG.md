@@ -1,5 +1,12 @@
 # Änderungen
 
+## Fehlgeschlagene oder lokal fehlende Instanzen
+
+- Ursprüngliche Installationsfehler werden dauerhaft gespeichert und direkt an der Instanz angezeigt. Start und Neustart verdecken sie nicht mehr mit „Instanz nicht gefunden“.
+- Vollständige Agenten-Heartbeats erkennen fehlende Instanzen und zeigen das aktive Datenverzeichnis; laufende Installationen werden dabei berücksichtigt.
+- „Installation wiederholen“ verwendet dieselbe ID, erhält vorhandene JARs und Konfigurationen und kann eine verlorene lokale Zuordnung wiederherstellen. Fehlende JARs werden weiterhin über verifizierte Downloads installiert.
+- Regressionstests prüfen fehlgeschlagene Velocity-Downloads, wiederholte Installationen, verlorene Zuordnungen, Dateierhalt und bestehende Datenbanken.
+
 ## Windows-Agent: Laufwerksmetriken
 
 - Pfade werden vor `psutil.disk_usage` mit `os.fspath` in Strings umgewandelt, da das Windows-Backend keine `WindowsPath`-Objekte akzeptiert.

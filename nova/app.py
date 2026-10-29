@@ -62,6 +62,7 @@ class HostMetrics(BaseModel):
     ram_used: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
     disk: float = Field(default=0, ge=0, le=100, allow_inf_nan=False)
     uptime: int = Field(default=0, ge=0)
+    data_dir: str | None = Field(default=None, max_length=2048)
 
 
 class InstanceMetrics(BaseModel):
@@ -121,6 +122,16 @@ def create_app(data_dir=None, demo=False, admin_password=None):
 
     def queue(server, kind, payload=None):
         active_agent(server['agent_id'])
+        if kind in {'start','restart'}:
+            setup = store.one('SELECT * FROM installations WHERE server_id=?', (server['id'],))
+            if setup and setup['status'] in {'queued','running'}:
+                raise HTTPException(409, 'Installation läuft noch. Bitte auf das Ergebnis warten.')
+            if setup and setup['status']=='failed':
+                raise HTTPException(409, 'Installation fehlgeschlagen: '+(setup['error'] or 'Ergebnis unbekannt')+
+                                    ' Behebe die Ursache und wähle „Installation wiederholen“.')
+            if server['status']=='missing':
+                raise HTTPException(409, 'Die Instanz fehlt im Datenverzeichnis des Agenten. '
+                                    'Prüfe --data und wiederhole bei Bedarf die Installation mit Dateierhalt.')
         job_id = store.job(server['agent_id'], server['id'], kind, payload or {})
         if demo:
             try:
@@ -129,6 +140,9 @@ def create_app(data_dir=None, demo=False, admin_password=None):
                 result = dict(ok=False,error=str(exc)[:2000],data={})
             store.execute('UPDATE jobs SET status=?,result=? WHERE id=?',
                           ('done' if result['ok'] else 'failed',json.dumps(result),job_id))
+            if kind=='install':
+                store.execute('UPDATE installations SET status=?,error=? WHERE job_id=?',
+                              ('done' if result['ok'] else 'failed',result.get('error',''),job_id))
         return {'job_id': job_id}
 
     def demo_job(server, kind, payload):
@@ -160,6 +174,9 @@ def create_app(data_dir=None, demo=False, admin_password=None):
             for job in store.all("SELECT * FROM jobs WHERE status='running' AND claimed<?", (now-900,)):
                 error = {'ok':False,'error':'Zeitlimit: Ergebnis unbekannt. Agent und Server prüfen; Auftrag wird nicht automatisch wiederholt.'}
                 store.execute("UPDATE jobs SET status='failed',result=? WHERE id=?", (json.dumps(error),job['id']))
+                if job['kind']=='install':
+                    store.execute("UPDATE installations SET status='failed',error=? WHERE job_id=?", (error['error'],job['id']))
+                    store.execute("UPDATE servers SET status='error' WHERE id=?", (job['server_id'],))
                 store.event('Auftrag ohne Rückmeldung', job['kind'], 'error')
             for routine in store.all('SELECT * FROM routines WHERE enabled=1 AND next_run<=?', (now,)):
                 try:
@@ -279,8 +296,10 @@ def create_app(data_dir=None, demo=False, admin_password=None):
             a['metrics'] = json.loads(a['metrics'])
         online = {a['id'] for a in agents if a['online']}
         servers = store.all('SELECT * FROM servers ORDER BY created,name')
+        installations = {row['server_id']:row for row in store.all('SELECT * FROM installations')}
         for s in servers:
             s['metrics'] = json.loads(s['metrics'])
+            s['installation'] = installations.get(s['id'])
             if s['agent_id'] not in online:
                 s['status'] = 'unknown'
                 s['metrics'] = {}
@@ -341,6 +360,13 @@ def create_app(data_dir=None, demo=False, admin_password=None):
         for id_, state in body.servers.items():
             store.execute('UPDATE servers SET status=?,metrics=? WHERE id=? AND agent_id=?',
                           (state.status,json.dumps(state.metrics.model_dump(exclude_none=True)),id_,agent['id']))
+        # The agent sends its complete local inventory. Missing IDs must not appear stopped.
+        pending = {r['server_id'] for r in store.all("SELECT server_id FROM installations WHERE status IN ('queued','running')")}
+        for s in store.all('SELECT id FROM servers WHERE agent_id=?', (agent['id'],)):
+            if s['id'] not in body.servers and s['id'] not in pending:
+                setup = store.one('SELECT status FROM installations WHERE server_id=?', (s['id'],))
+                status = 'error' if setup and setup['status']=='failed' else 'missing'
+                store.execute('UPDATE servers SET status=?,metrics=? WHERE id=?', (status,'{}',s['id']))
         return {'ok':True}
 
     @app.post('/api/agent/claim')
@@ -351,6 +377,8 @@ def create_app(data_dir=None, demo=False, admin_password=None):
             if not job:
                 return {'job':None}
             db.execute("UPDATE jobs SET status='running',claimed=? WHERE id=?", (time.time(),job['id']))
+            if job['kind']=='install':
+                db.execute("UPDATE installations SET status='running' WHERE job_id=?", (job['id'],))
             job = dict(job)
         job['payload'] = json.loads(job['payload'])
         return {'job':job}
@@ -362,12 +390,17 @@ def create_app(data_dir=None, demo=False, admin_password=None):
             raise HTTPException(404, 'Aktiver Auftrag nicht gefunden')
         store.execute('UPDATE jobs SET status=?,result=? WHERE id=?', ('done' if body.ok else 'failed',body.model_dump_json(),id_))
         if job['kind']=='install':
+            store.execute('UPDATE installations SET status=?,error=? WHERE job_id=?',
+                          ('done' if body.ok else 'failed',body.error,job['id']))
             store.execute('UPDATE servers SET status=? WHERE id=?', ('stopped' if body.ok else 'error',job['server_id']))
         if job['kind']=='forget' and body.ok:
             store.execute('DELETE FROM routines WHERE server_id=?', (job['server_id'],))
             store.execute('DELETE FROM servers WHERE id=?', (job['server_id'],))
+            store.execute('DELETE FROM installations WHERE server_id=?', (job['server_id'],))
         if not body.ok:
-            store.event('Auftrag fehlgeschlagen', f"{job['kind']}: {body.error}", 'error')
+            instance = store.one('SELECT name FROM servers WHERE id=?', (job['server_id'],))
+            name = instance['name'] if instance else job['server_id']
+            store.event('Auftrag fehlgeschlagen', f"{name} · {job['kind']}: {body.error}", 'error')
         elif job['kind'] not in {'logs','files_list','files_read'}:
             store.event('Auftrag abgeschlossen', f"{job['kind']} · {job['server_id']}", 'success')
         return {'ok':True}
@@ -406,11 +439,28 @@ def create_app(data_dir=None, demo=False, admin_password=None):
             raise HTTPException(409, 'Installation läuft noch.')
         return queue(s, action)
 
+    @app.post('/api/servers/{id_}/install', dependencies=[Depends(admin)])
+    def retry_install(id_: str):
+        s = get_server(id_)
+        active_agent(s['agent_id'])
+        if s['status']=='running':
+            raise HTTPException(409, 'Instanz vor einer Wiederherstellung stoppen.')
+        if store.one("SELECT id FROM jobs WHERE server_id=? AND status IN ('queued','running')", (id_,)):
+            raise HTTPException(409, 'Es gibt noch ausstehende Aufträge. Bitte auf deren Ergebnis warten.')
+        payload = {key:s[key] for key in ('name','agent_id','software','version','port','memory')}
+        # Every Paper row could only be created after EULA acceptance.
+        payload.update(accept_eula=s['software']=='paper',recover_existing=True)
+        result = queue(s,'install',payload)
+        if not demo:
+            store.execute("UPDATE servers SET status='installing' WHERE id=?", (id_,))
+        store.event('Installation erneut angefordert', s['name']+' · vorhandene Dateien bleiben erhalten')
+        return result
+
     @app.delete('/api/servers/{id_}', dependencies=[Depends(admin)])
     def delete_server(id_: str):
         s = get_server(id_)
         active_agent(s['agent_id'])
-        if s['status'] not in {'stopped','error'}:
+        if s['status'] not in {'stopped','error','missing'}:
             raise HTTPException(409, 'Instanz muss vor dem Entfernen gestoppt sein.')
         if store.one("SELECT id FROM jobs WHERE server_id=? AND status IN ('queued','running')", (id_,)):
             raise HTTPException(409, 'Es gibt noch ausstehende Aufträge.')
@@ -418,6 +468,7 @@ def create_app(data_dir=None, demo=False, admin_password=None):
         if demo:
             store.execute('DELETE FROM routines WHERE server_id=?', (id_,))
             store.execute('DELETE FROM servers WHERE id=?', (id_,))
+            store.execute('DELETE FROM installations WHERE server_id=?', (id_,))
         store.event('Entfernung angefordert', s['name']+' · Dateien bleiben auf dem Agenten erhalten')
         return result
 

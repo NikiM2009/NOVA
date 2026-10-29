@@ -101,6 +101,68 @@ class ControlPlaneTests(unittest.TestCase):
         self.store.execute("UPDATE servers SET status='stopped'")
         self.assertEqual(self.client.post(f'/api/servers/{install["server_id"]}/actions/start').status_code,409)
 
+    def test_failed_velocity_install_keeps_original_error_and_can_retry(self):
+        self.login()
+        agent,headers=self.pair()
+        created=self.client.post('/api/servers',json=dict(name='Velocity',agent_id=agent['id'],software='velocity',version='3.4.0',port=25565)).json()
+        id_=created['server_id']
+        install=self.client.post('/api/agent/claim',headers=headers).json()['job']
+        error='Java 21 oder neuer ist erforderlich.'
+        self.client.post('/api/agent/jobs/'+install['id'],headers=headers,json=dict(ok=False,error=error))
+        state=self.client.get('/api/overview').json()['servers'][0]
+        self.assertEqual(state['installation']['error'],error)
+        start=self.client.post(f'/api/servers/{id_}/actions/start')
+        self.assertEqual(start.status_code,409)
+        self.assertIn(error,start.json()['detail'])
+        self.assertIsNone(self.client.post('/api/agent/claim',headers=headers).json()['job'])
+        retry=self.client.post(f'/api/servers/{id_}/install')
+        self.assertEqual(retry.status_code,200)
+        self.assertEqual(self.client.post(f'/api/servers/{id_}/install').status_code,409)
+        claimed=self.client.post('/api/agent/claim',headers=headers).json()['job']
+        self.assertEqual(claimed['server_id'],id_)
+        self.assertTrue(claimed['payload']['recover_existing'])
+        self.assertEqual(claimed['payload']['software'],'velocity')
+        self.client.post('/api/agent/jobs/'+claimed['id'],headers=headers,json=dict(ok=True,data={}))
+        self.assertEqual(self.client.post(f'/api/servers/{id_}/actions/start').status_code,200)
+        self.assertEqual(len(self.client.get('/api/overview').json()['servers']),1)
+
+    def test_agent_inventory_reports_missing_instance_and_keeps_pending_install(self):
+        self.login()
+        agent,headers=self.pair()
+        created=self.install(agent)
+        id_=created['server_id']
+        # An empty inventory during an installation is expected.
+        body=dict(metrics={'data_dir':'/srv/nova/agent'},servers={})
+        self.client.post('/api/agent/heartbeat',headers=headers,json=body)
+        self.assertEqual(self.client.get('/api/overview').json()['servers'][0]['status'],'installing')
+        claimed=self.client.post('/api/agent/claim',headers=headers).json()['job']
+        self.client.post('/api/agent/jobs/'+claimed['id'],headers=headers,json={'ok':True})
+        self.client.post('/api/agent/heartbeat',headers=headers,json=body)
+        overview=self.client.get('/api/overview').json()
+        self.assertEqual(overview['servers'][0]['status'],'missing')
+        self.assertEqual(overview['agents'][0]['metrics']['data_dir'],'/srv/nova/agent')
+        start=self.client.post(f'/api/servers/{id_}/actions/start')
+        self.assertEqual(start.status_code,409)
+        self.assertIn('Datenverzeichnis',start.json()['detail'])
+        self.assertEqual(self.client.post(f'/api/servers/{id_}/install').status_code,200)
+        self.client.post('/api/agent/heartbeat',headers=headers,json=body)
+        self.assertEqual(self.client.get('/api/overview').json()['servers'][0]['status'],'installing')
+
+    def test_existing_installation_failure_is_backfilled_and_survives_job_cleanup(self):
+        self.login()
+        agent,headers=self.pair()
+        created=self.install(agent)
+        claimed=self.client.post('/api/agent/claim',headers=headers).json()['job']
+        self.client.post('/api/agent/jobs/'+claimed['id'],headers=headers,json=dict(ok=False,error='Download nicht erreichbar'))
+        self.store.execute('DELETE FROM installations')
+        from nova.store import Store
+        Store(self.store.path)
+        self.store.execute('DELETE FROM jobs')
+        Store(self.store.path)
+        state=self.client.get('/api/overview').json()['servers'][0]
+        self.assertEqual(state['installation']['status'],'failed')
+        self.assertEqual(state['installation']['error'],'Download nicht erreichbar')
+
     def test_validation_and_file_paths(self):
         self.login()
         agent,_=self.pair()

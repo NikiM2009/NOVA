@@ -98,6 +98,20 @@ Läuft die Zentrale auf einem anderen Gerät, dessen tatsächlich erreichbare HT
 
 NOVA prüft beim Agentenstart jetzt zuerst `/health`, meldet eine unerreichbare oder im Demomodus gestartete Zentrale verständlich und fragt erst danach nach dem Kopplungscode. Ein verweigerter Verbindungsaufbau wird nicht durch erneutes Installieren oder einen anderen Code behoben. Bereits installierte Agenten direkt mit dem oben angegebenen `.venv`-Python starten.
 
+### „Instanz auf diesem Agenten nicht gefunden“ bei Paper oder Velocity
+
+Ein Eintrag im Panel bedeutet noch nicht, dass die Installation auf dem Agenten erfolgreich war. Bei einer fehlgeschlagenen Installation zeigt NOVA jetzt den ursprünglichen Fehler direkt in der Instanzübersicht und verhindert Startversuche, die nur einen Folgefehler erzeugen würden. Diese Diagnose bleibt erhalten, auch wenn alte Auftragsprotokolle bereinigt werden.
+
+Wenn der Agent eine zuvor installierte Instanz lokal nicht mehr kennt, erscheint **„Fehlt auf Agent“**. Prüfe zuerst das aktive Datenverzeichnis: Der Agent nennt es beim Start und meldet es im Panel unter Agentendetails. `.nova/agent` ist relativ zum aktuellen Arbeitsverzeichnis; ein Start aus einem anderen Ordner oder ein abweichendes `--data` kann deshalb andere Instanzdaten verwenden. Auf Linux kann beispielsweise `--data /home/niklas/NOVA/.nova/agent` einen festen Pfad festlegen, wenn dort die bisherigen Agentendaten liegen. Bereits vorhandene Datenverzeichnisse, `connection.json` und `instances.json` nicht löschen.
+
+Nach einer Aktualisierung **Zentrale und betroffenen Agenten neu starten**, dann die Instanzübersicht öffnen:
+
+1. Den angezeigten ursprünglichen Fehler beheben. Bei Java-Problemen auf dem Agenten `java -version` prüfen; NOVA verlangt mindestens Java 21. Bei Downloadfehlern die offiziellen PaperMC-Ziele aus der Netzwerkliste prüfen. Eine Pi-Installation kann zusätzlich ein zu Java passendes 64-Bit-Betriebssystem benötigen.
+2. Das richtige Agenten-Datenverzeichnis verwenden. Wenn die Instanz dort fehlt oder nur unvollständig installiert wurde, **„Installation wiederholen“** wählen.
+3. Der Auftrag verwendet dieselbe Instanz-ID. Eine fehlende JAR wird erneut über den offiziellen Katalog und mit SHA-256-Prüfung geladen. Eine bereits vorhandene lesbare JAR sowie Konfigurationen und Plugins bleiben erhalten; die lokale Zuordnung wird wiederhergestellt. Dabei muss die im Panel angegebene Softwareversion zu den vorhandenen Dateien passen. Die Wiederzuordnung ist kein Versionsupdate und bestätigt nicht nachträglich die Herkunft einer vorhandenen lokalen JAR.
+4. Eine beschädigte oder verlinkte JAR wird nicht überschrieben. Sie muss vor einem erneuten Download gesichert und separat geprüft werden. Noch laufende Prozesse derselben Instanz verhindern eine Wiederherstellung.
+5. Erst nach erfolgreicher Installation starten. Netzwerkrouten bei Bedarf anschließend wie unten beschrieben konfigurieren.
+
 ## Ein Minecraft-Netzwerk aufbauen
 
 1. Agent(en) verbinden und ihre vom Proxy erreichbaren Adressen prüfen.
@@ -147,7 +161,7 @@ Zentrale und Agent speichern unter `.nova/` (mit `--data` änderbar):
     backups/<id>/*.zip      # Lokale Backups
 ```
 
-Datenverzeichnisse nicht ins Git-Repository aufnehmen oder öffentlich freigeben. Linux-Dateimodi für Agentenschlüssel werden auf `0600` gesetzt; unter Windows zusätzlich passende Verzeichnis-ACLs setzen. Zentrale inklusive SQLite-Datenbank regelmäßig sichern. Die v0.1.0 hat noch keine Datenbankmigrationen oder Hochverfügbarkeit; mehrere Zentralen dürfen nicht gleichzeitig dieselbe Datenbank betreiben.
+Datenverzeichnisse nicht ins Git-Repository aufnehmen oder öffentlich freigeben. Linux-Dateimodi für Agentenschlüssel werden auf `0600` gesetzt; unter Windows zusätzlich passende Verzeichnis-ACLs setzen. Zentrale inklusive SQLite-Datenbank regelmäßig sichern. Die Tabelle für Installationsdiagnosen wird beim Start automatisch ergänzend angelegt und aus vorhandenen Installationsaufträgen befüllt. Mehrere Zentralen dürfen nicht gleichzeitig dieselbe Datenbank betreiben; Hochverfügbarkeit ist noch nicht enthalten.
 
 ### Benötigter Netzwerkzugriff
 
@@ -173,7 +187,7 @@ Wenn ein Java-21-JDK mit `javac` installiert ist, wird zusätzlich eine kleine J
 
 Die lokalen Backend-/Agententests einschließlich des echten JVM-Tests sind bestanden; zusätzlich wurde der Desktop-/Mobilablauf in Chromium geprüft. Regressionstests stellen einen tatsächlich verweigerten Verbindungsaufbau nach und prüfen, dass dabei weder ein Kopplungscode abgefragt noch ein Traceback ausgegeben wird. Echte PaperMC-Downloads und Minecraft-Serverstarts konnten wegen der Netzwerkfreigabe der Cloud-Umgebung nicht ausgeführt werden. Die Windows-Matrix wird erst durch GitHub Actions überprüft; sie wurde hier nicht lokal ausgeführt.
 
-Optionaler Browser-Smoke-Test: Playwright und Chromium separat installieren, Demo starten und `python tests/browser_smoke.py` ausführen. `NOVA_TEST_URL` und `NOVA_TEST_BROWSER` wählen bei Bedarf Zieladresse und Chromium-Datei. Der Test verändert ausschließlich Demodaten.
+Optionaler Browser-Smoke-Test: Playwright und Chromium separat installieren, Demo starten und `python tests/browser_smoke.py` ausführen. `NOVA_TEST_URL` und `NOVA_TEST_BROWSER` wählen bei Bedarf Zieladresse und Chromium-Datei. Der Test verändert ausschließlich Demodaten. `python tests/browser_install_recovery.py` prüft zusätzlich die Anzeige des ursprünglichen Installationsfehlers und die Wiederholung mit derselben Instanz-ID.
 
 Frontend: natives JavaScript, CSS und SVG unter `nova/static/`. Backend: FastAPI/SQLite, Agent: `subprocess`, `psutil`, ausgehendes HTTP. Alles wird durch die Python-Zentrale ausgeliefert. Für Cloud-Aufgaben den vorhandenen Checkout verwenden; kein zusätzliches Git-Worktree erforderlich.
 
