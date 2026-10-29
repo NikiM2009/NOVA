@@ -1,7 +1,9 @@
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -10,11 +12,54 @@ import unittest
 from unittest.mock import patch
 
 import httpx
+import psutil
 
 from nova.agent import AgentSetupError, check_central, register_agent, run_agent
 
 
 class AgentSetupTests(unittest.TestCase):
+    def test_paired_agent_sends_heartbeat_with_windows_compatible_disk_path(self):
+        original_client = httpx.Client
+        original_disk_usage = psutil.disk_usage
+        handlers = {}
+        heartbeats = []
+        disk_paths = []
+        def windows_disk_usage(path):
+            # The Windows psutil extension rejects pathlib objects.
+            if not isinstance(path,str):
+                raise TypeError('argument 1 must be str, not WindowsPath')
+            disk_paths.append(path)
+            return original_disk_usage(path)
+        def handler(request):
+            if request.url.path=='/health':
+                return httpx.Response(200,json={'status':'ok','demo':False})
+            self.assertEqual(request.headers['Authorization'],'Bearer test-agent-key')
+            if request.url.path=='/api/agent/claim':
+                return httpx.Response(200,json={'job':None})
+            if request.url.path=='/api/agent/heartbeat':
+                heartbeats.append(json.loads(request.content))
+                handlers[signal.SIGTERM](None,None)
+                return httpx.Response(200,json={'ok':True})
+            self.fail('Unexpected agent request: '+request.url.path)
+        def client(**kwargs):
+            return original_client(**kwargs,transport=httpx.MockTransport(handler))
+        with tempfile.TemporaryDirectory() as directory:
+            connection=Path(directory)/'connection.json'
+            saved=dict(id='test-agent',token='test-agent-key',url='http://127.0.0.1:8000')
+            connection.write_text(json.dumps(saved),encoding='utf-8')
+            with patch('nova.agent.httpx.Client',side_effect=client), \
+                 patch('nova.agent.psutil.disk_usage',side_effect=windows_disk_usage), \
+                 patch('nova.agent.signal.signal',side_effect=lambda number,callback:handlers.update({number:callback})), \
+                 patch('getpass.getpass') as prompt,contextlib.redirect_stdout(io.StringIO()):
+                run_agent(saved['url'],directory)
+            prompt.assert_not_called()
+            self.assertEqual(json.loads(connection.read_text(encoding='utf-8')),saved)
+            self.assertEqual(disk_paths,[os.fspath(Path(directory).resolve())])
+        self.assertEqual(len(heartbeats),1)
+        self.assertEqual(heartbeats[0]['servers'],{})
+        self.assertGreaterEqual(heartbeats[0]['metrics']['disk'],0)
+        self.assertLessEqual(heartbeats[0]['metrics']['disk'],100)
+
     def test_refused_connection_does_not_ask_for_code_or_save_credentials(self):
         original_client = httpx.Client
         def handler(request):

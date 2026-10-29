@@ -565,7 +565,7 @@ def run_agent(url, root, name=None, address=None, allow_http=False, java='java')
             while not stopped.is_set():
                 memory = psutil.virtual_memory()
                 metrics = dict(cpu=psutil.cpu_percent(),ram_total=round(memory.total/1024**3,1),
-                               ram_used=round(memory.used/1024**3,1),disk=psutil.disk_usage(root).percent,
+                               ram_used=round(memory.used/1024**3,1),disk=psutil.disk_usage(os.fspath(root)).percent,
                                uptime=int(time.time()-psutil.boot_time()))
                 try:
                     response = client.post('/api/agent/heartbeat',json=dict(metrics=metrics,servers=engine.snapshot()))

@@ -1,5 +1,10 @@
 # Änderungen
 
+## Windows-Agent: Laufwerksmetriken
+
+- Pfade werden vor `psutil.disk_usage` mit `os.fspath` in Strings umgewandelt, da das Windows-Backend keine `WindowsPath`-Objekte akzeptiert.
+- Ein Regressionstest startet einen bereits gekoppelten Agenten mit der strikten Windows-Pfadgrenze, prüft den Heartbeat und bestätigt, dass die gespeicherte Kopplung erhalten bleibt.
+
 ## Korrektur des Agentenstarts
 
 - Erreichbarkeit und Betriebsmodus der Zentrale werden vor der Kopplungscode-Abfrage geprüft.
