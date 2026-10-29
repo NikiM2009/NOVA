@@ -1,0 +1,21 @@
+[Unit]
+Description=NOVA Minecraft agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nova
+Group=nova
+WorkingDirectory=/opt/NOVA
+# Pair manually with these exact --url and --data values before enabling the service.
+ExecStart=/opt/NOVA/.venv/bin/python -m nova agent --url https://nova.example.com --data /var/lib/nova/agent
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=600
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

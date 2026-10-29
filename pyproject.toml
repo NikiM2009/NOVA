@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nova-network"
+version = "0.1.0"
+description = "A Python control plane for Minecraft networks"
+requires-python = ">=3.11"
+dependencies = ["fastapi==0.141.1", "uvicorn==0.52.1", "httpx==0.28.1", "psutil==7.2.2", "PyYAML==6.0.3"]
+
+[project.scripts]
+nova = "nova.__main__:main"
+
+[tool.setuptools.package-data]
+nova = ["static/*"]
+
+[tool.setuptools.packages.find]
+include = ["nova*"]

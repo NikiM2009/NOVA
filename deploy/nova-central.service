@@ -1,0 +1,19 @@
+[Unit]
+Description=NOVA Minecraft control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nova
+Group=nova
+WorkingDirectory=/opt/NOVA
+ExecStart=/opt/NOVA/.venv/bin/python -m nova serve --data /var/lib/nova/central
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
